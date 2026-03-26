@@ -6,6 +6,11 @@
 #include "timer.h"
 #include "trap.h"
 
+
+uint64 sys_task_info(uint64 va);
+uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd);
+uint64 sys_munmap(uint64 start, uint64 len);
+
 uint64 sys_write(int fd, uint64 va, uint len)
 {
 	debugf("sys_write fd = %d str = %x, len = %d", fd, va, len);
@@ -148,10 +153,67 @@ void syscall()
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+	case SYS_mmap:
+    	ret = sys_mmap(args[0], args[1], args[2], args[3], args[4]);
+    	break;
+	case SYS_munmap:
+    	ret = sys_munmap(args[0], args[1]);
+    	break;
 	default:
 		ret = -1;
 		errorf("unknown syscall %d", id);
 	}
 	trapframe->a0 = ret;
 	tracef("syscall ret %d", ret);
+}
+uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd)
+{
+    struct proc *p = curr_proc();
+    uint64 a;
+    int perm = PTE_U;
+
+    if (len == 0) return 0;
+    if (start % PGSIZE != 0) return -1;
+    if (len > (1ULL << 30)) return -1;
+    if ((port & ~0x7) != 0) return -1;
+    if ((port & 0x7) == 0) return -1;
+
+    if (port & 0x1) perm |= PTE_R;
+    if (port & 0x2) perm |= PTE_W;
+    if (port & 0x4) perm |= PTE_X;
+
+    len = PGROUNDUP(len);
+
+    for (a = start; a < start + len; a += PGSIZE) {
+        if (walkaddr(p->pagetable, a) != 0) return -1;
+    }
+
+    for (a = start; a < start + len; a += PGSIZE) {
+        void *mem = kalloc();
+        if (mem == 0) return -1;
+        memset(mem, 0, PGSIZE);
+        if (mappages(p->pagetable, a, PGSIZE, (uint64)mem, perm) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+uint64 sys_munmap(uint64 start, uint64 len)
+{
+    struct proc *p = curr_proc();
+    uint64 a;
+
+    if (len == 0) return 0;
+    if (start % PGSIZE != 0) return -1;
+
+    len = PGROUNDUP(len);
+
+    for (a = start; a < start + len; a += PGSIZE) {
+        if (walkaddr(p->pagetable, a) == 0) return -1;
+    }
+
+    uvmunmap(p->pagetable, start, len / PGSIZE, 1);
+    return 0;
 }
