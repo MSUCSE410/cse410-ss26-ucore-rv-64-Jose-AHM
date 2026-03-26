@@ -11,3 +11,4 @@ kernel_app.ld
 *.asm
 *.sym
 cr-scripts/
+cr-scripts/
