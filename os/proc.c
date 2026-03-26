@@ -2,6 +2,7 @@
 #include "defs.h"
 #include "loader.h"
 #include "trap.h"
+#include "timer.h"
 #include "vm.h"
 
 struct proc pool[NPROC];

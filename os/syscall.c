@@ -4,6 +4,9 @@
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
+#include "vm.h"
+#include "proc.h"
+#include "string.h"
 
 uint64 sys_write(int fd, uint64 va, uint len)
 {
@@ -32,17 +35,21 @@ uint64 sys_sched_yield()
 	return 0;
 }
 
-uint64 sys_gettimeofday(TimeVal *val, int _tz) // TODO: implement sys_gettimeofday in pagetable. (VA to PA)
+uint64 sys_gettimeofday(uint64 va, int _tz) // TODO: implement sys_gettimeofday in pagetable. (VA to PA)
 {
-	// YOUR CODE
-	val->sec = 0;
-	val->usec = 0;
+	struct proc *p = curr_proc();
+	TimeVal ktv = {0};
 
-	/* The code in `ch3` will leads to memory bugs*/
+	uint64 cycle = get_cycle();
+	ktv.sec = cycle / CPU_FREQ;
+	ktv.usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
 
-	// uint64 cycle = get_cycle();
-	// val->sec = cycle / CPU_FREQ;
-	// val->usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
+	uint64 pa = useraddr(p->pagetable, va);
+	if (pa == 0) {
+		return -1;
+	}
+
+	memmove((void *)pa, &ktv, sizeof(TimeVal));
 	return 0;
 }
 
@@ -53,9 +60,9 @@ uint64 sys_gettimeofday(TimeVal *val, int _tz) // TODO: implement sys_gettimeofd
 * LAB1: you may need to define sys_task_info here
 */
 
-uint64 sys_task_info(TaskInfo *ti)
+uint64 sys_task_info(uint64 va)
 {
-	struct proc *p = curr_proc();
+struct proc *p = curr_proc();
 	TaskInfo kti = {0};
 
 	kti.status = Running;
@@ -72,7 +79,12 @@ uint64 sys_task_info(TaskInfo *ti)
 		kti.time = 0;
 	}
 
-	memmove(ti, &kti, sizeof(TaskInfo));
+	uint64 pa = useraddr(p->pagetable, va);
+	if (pa == 0) {
+		return -1;
+	}
+
+	memmove((void *)pa, &kti, sizeof(TaskInfo));
 	return 0;
 }
 
@@ -103,13 +115,13 @@ void syscall()
 		ret = sys_sched_yield();
 		break;
 	case SYS_gettimeofday:
-		ret = sys_gettimeofday((TimeVal *)args[0], args[1]);
+		ret = sys_gettimeofday(args[0], args[1]);
 		break;
 	/*
 	* LAB1: you may need to add SYS_taskinfo case here
 	*/
 	case SYS_task_info:
-		ret = sys_task_info((TaskInfo *)args[0]);
+		ret = sys_task_info(args[0]);
 		break;
 	default:
 		ret = -1;
