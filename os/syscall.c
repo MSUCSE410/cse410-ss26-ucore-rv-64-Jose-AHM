@@ -6,10 +6,12 @@
 #include "timer.h"
 #include "trap.h"
 
+#define BIG_STRIDE 0x7fffffffULL
 
 uint64 sys_task_info(uint64 va);
 uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd);
 uint64 sys_munmap(uint64 start, uint64 len);
+void freeproc(struct proc *p);
 
 uint64 sys_write(int fd, uint64 va, uint len)
 {
@@ -99,13 +101,42 @@ uint64 sys_wait(int pid, uint64 va)
 
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+	        struct proc *p = curr_proc();
+        char name[200];
+
+        if (copyinstr(p->pagetable, name, va, sizeof(name)) < 0)
+                return -1;
+
+        int id = get_id_by_name(name);
+        if (id < 0)
+                return -1;
+
+        struct proc *np = allocproc();
+        if (np == 0)
+                return -1;
+
+        np->parent = p;
+
+        if (loader(id, np) < 0) {
+                freeproc(np);
+                return -1;
+        }
+
+        np->state = RUNNABLE;
+		//add_task(np);
+        return np->pid;
 }
 
-uint64 sys_set_priority(long long prio){
-    // TODO: your job is to complete the sys call
-    return -1;
+uint64 sys_set_priority(long long prio)
+{
+    struct proc *p = curr_proc();
+
+	if (prio < 2)
+			return -1;
+
+	p->priority = (uint64)prio;
+	p->pass = BIG_STRIDE / p->priority;
+	return p->priority;
 }
 
 
@@ -153,6 +184,9 @@ void syscall()
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+	case SYS_setpriority:
+        ret = sys_set_priority((long long)args[0]);
+        break;
 	case SYS_mmap:
     	ret = sys_mmap(args[0], args[1], args[2], args[3], args[4]);
     	break;

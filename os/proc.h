@@ -44,6 +44,11 @@ struct proc {
 	uint64 max_page;
 	struct proc *parent; // Parent process
 	uint64 exit_code;
+
+	uint64 stride;
+	uint64 pass;
+	uint64 priority;
+	
 	struct file *files[FD_BUFFER_SIZE];
 };
 

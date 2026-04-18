@@ -5,6 +5,8 @@
 #include "vm.h"
 #include "queue.h"
 
+#define BIG_STRIDE 0x7fffffffULL
+
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
 __attribute__((aligned(4096))) char trapframe[NPROC][TRAP_PAGE_SIZE];
@@ -83,6 +85,9 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	p->stride = 0;
+	p->priority = 16;
+	p->pass = BIG_STRIDE / p->priority;
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -99,29 +104,29 @@ found:
 //    via swtch back to the scheduler.
 void scheduler()
 {
-	struct proc *p;
+    struct proc *p;
+    struct proc *best;
+
 	for (;;) {
-		/*int has_proc = 0;
-		for (p = pool; p < &pool[NPROC]; p++) {
-			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
+			best = NULL;
+
+			for (p = pool; p < &pool[NPROC]; p++) {
+					if (p->state == RUNNABLE) {
+							if (best == NULL || p->stride < best->stride) {
+									best = p;
+							}
+					}
 			}
-		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
-		if (p == NULL) {
-			panic("all app are over!\n");
-		}
-		tracef("swtich to proc %d", p - pool);
-		p->state = RUNNING;
-		current_proc = p;
-		swtch(&idle.context, &p->context);
+
+			if (best == NULL) {
+					panic("all app are over!\n");
+			}
+
+			best->stride += best->pass;
+			tracef("swtich to proc %d", best - pool);
+			best->state = RUNNING;
+			current_proc = best;
+			swtch(&idle.context, &best->context);
 	}
 }
 
@@ -144,8 +149,7 @@ void sched()
 void yield()
 {
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
-	sched();
+    sched();
 }
 
 // Free a process's page table, and free the
@@ -184,7 +188,6 @@ int fork()
 	np->trapframe->a0 = 0;
 	np->parent = p;
 	np->state = RUNNABLE;
-	add_task(np);
 	return np->pid;
 }
 
@@ -226,7 +229,6 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
 		sched();
 	}
 }
