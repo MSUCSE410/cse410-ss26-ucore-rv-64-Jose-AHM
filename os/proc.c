@@ -5,6 +5,8 @@
 #include "vm.h"
 #include "queue.h"
 
+#define BIG_STRIDE 0x7fffffffULL // Large constant used to compute pass = BIG_STRIDE / priority
+
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
 __attribute__((aligned(4096))) char trapframe[NPROC][TRAP_PAGE_SIZE];
@@ -89,6 +91,9 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	p->stride = 0;  // New process starts with no CPU usage yet
+	p->priority = 16; // Default priority required by the project
+	p->pass = BIG_STRIDE / p->priority; // Amount added to stride after each run
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -119,27 +124,27 @@ void scheduler()
 {
 	struct proc *p;
 	for (;;) {
-		/*int has_proc = 0;
-		for (p = pool; p < &pool[NPROC]; p++) {
-			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
+			best = NULL;
+			//Look through all processes and choose the runnable one
+                // with the smallest stride value
+			for (p = pool; p < &pool[NPROC]; p++) {
+					if (p->state == RUNNABLE) {
+							if (best == NULL || p->stride < best->stride) {
+									best = p;
+							}
+					}
 			}
-		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
-		if (p == NULL) {
-			panic("all app are over!\n");
-		}
-		tracef("swtich to proc %d", p - pool);
-		p->state = RUNNING;
-		current_proc = p;
-		swtch(&idle.context, &p->context);
+			// If nothing can run, all user apps are done
+			if (best == NULL) {
+					panic("all app are over!\n");
+			}
+			// This process is being chosen now, so increase its stride
+                // by its pass value before switching to it
+			best->stride += best->pass;
+			tracef("swtich to proc %d", best - pool);
+			best->state = RUNNING;
+			current_proc = best;
+			swtch(&idle.context, &best->context);
 	}
 }
 
@@ -161,6 +166,7 @@ void sched()
 // Give up the CPU for one scheduling round.
 void yield()
 {
+	// Current process gives up the CPU but stays runnable
 	current_proc->state = RUNNABLE;
 	add_task(current_proc);
 	sched();
@@ -215,8 +221,7 @@ int fork()
 	// Cause fork to return 0 in the child.
 	np->trapframe->a0 = 0;
 	np->parent = p;
-	np->state = RUNNABLE;
-	add_task(np);
+	np->state = RUNNABLE;// Child is ready to run and will be picked by stride scheduler
 	return np->pid;
 }
 
@@ -296,6 +301,7 @@ int wait(int pid, int *code)
 		if (!havekids) {
 			return -1;
 		}
+		// Parent did not find a finished child yet, so let other processes run
 		p->state = RUNNABLE;
 		add_task(p);
 		sched();

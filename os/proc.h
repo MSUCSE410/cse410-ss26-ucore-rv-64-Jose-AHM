@@ -43,8 +43,12 @@ struct proc {
 	uint64 max_page;
 	struct proc *parent; // Parent process
 	uint64 exit_code;
-	struct file *files
-		[FD_BUFFER_SIZE]; //File descriptor table, using to record the files opened by the process
+
+	uint64 stride; // Current scheduling score. Smaller means this process should run sooner.
+	uint64 pass;	// How much stride increases each time this process runs.
+	uint64 priority; // Process priority. Bigger priority = gets more CPU time.
+
+	struct file *files[FD_BUFFER_SIZE];
 };
 
 int cpuid();

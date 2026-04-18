@@ -6,9 +6,7 @@
 #include "timer.h"
 #include "trap.h"
 
-<<<<<<< HEAD
-uint64 console_write(uint64 va, uint64 len)
-=======
+#define BIG_STRIDE 0x7fffffffULL // Large constant used to compute pass = BIG_STRIDE / priority
 
 uint64 sys_task_info(uint64 va);
 uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd);
@@ -153,52 +151,45 @@ uint64 sys_wait(int pid, uint64 va)
 
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+	        struct proc *p = curr_proc();
+        char name[200];
+
+		// Copy the program name from user memory into the kernel
+        if (copyinstr(p->pagetable, name, va, sizeof(name)) < 0)
+                return -1;
+		// Find which built-in user program matches that name
+        int id = get_id_by_name(name);
+        if (id < 0)
+                return -1;
+		// Create a new process slot for the child
+        struct proc *np = allocproc();
+        if (np == 0)
+                return -1;
+		// Record who created this child
+        np->parent = p;
+
+		// Load the requested program into the child process
+        if (loader(id, np) < 0) {
+                freeproc(np);
+                return -1;
+        }
+		//Child is ready to be scheduled
+        np->state = RUNNABLE;
+		//add_task(np);
+        return np->pid;
 }
 
 uint64 sys_set_priority(long long prio)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
-}
-
-uint64 sys_openat(uint64 va, uint64 omode, uint64 _flags)
-{
-	struct proc *p = curr_proc();
-	char path[200];
-	copyinstr(p->pagetable, path, va, 200);
-	return fileopen(path, omode);
-}
-
-uint64 sys_close(int fd)
-{
-	if (fd < 0 || fd > FD_BUFFER_SIZE)
-		return -1;
-	struct proc *p = curr_proc();
-	struct file *f = p->files[fd];
-	if (f == NULL) {
-		errorf("invalid fd %d", fd);
-		return -1;
-	}
-	fileclose(f);
-	p->files[fd] = 0;
-	return 0;
-}
-
-int sys_fstat(int fd,uint64 stat){
-	//TODO: your job is to complete the syscall
-	return -1;
-}
-
-int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint64 flags){
-	//TODO: your job is to complete the syscall
-	return -1;
-}
-
-int sys_unlinkat(int dirfd, uint64 name, uint64 flags){
-	//TODO: your job is to complete the syscall
-	return -1;
+    struct proc *p = curr_proc();
+	   // Priority must be at least 2
+	if (prio < 2)
+			return -1;
+	// Save the new priority
+	p->priority = (uint64)prio;
+	// Recompute pass so future scheduling reflects the new priority
+	p->pass = BIG_STRIDE / p->priority;
+	return p->priority;
 }
 
 extern char trap_page[];
