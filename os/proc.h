@@ -45,10 +45,10 @@ struct proc {
 	struct proc *parent; // Parent process
 	uint64 exit_code;
 
-	uint64 stride;
-	uint64 pass;
-	uint64 priority;
-	
+	uint64 stride; // Current scheduling score. Smaller means this process should run sooner.
+	uint64 pass;	// How much stride increases each time this process runs.
+	uint64 priority; // Process priority. Bigger priority = gets more CPU time.
+
 	struct file *files[FD_BUFFER_SIZE];
 };
 

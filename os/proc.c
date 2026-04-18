@@ -5,7 +5,7 @@
 #include "vm.h"
 #include "queue.h"
 
-#define BIG_STRIDE 0x7fffffffULL
+#define BIG_STRIDE 0x7fffffffULL // Large constant used to compute pass = BIG_STRIDE / priority
 
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
@@ -85,9 +85,9 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
-	p->stride = 0;
-	p->priority = 16;
-	p->pass = BIG_STRIDE / p->priority;
+	p->stride = 0;  // New process starts with no CPU usage yet
+	p->priority = 16; // Default priority required by the project
+	p->pass = BIG_STRIDE / p->priority; // Amount added to stride after each run
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -109,7 +109,8 @@ void scheduler()
 
 	for (;;) {
 			best = NULL;
-
+			//Look through all processes and choose the runnable one
+                // with the smallest stride value
 			for (p = pool; p < &pool[NPROC]; p++) {
 					if (p->state == RUNNABLE) {
 							if (best == NULL || p->stride < best->stride) {
@@ -117,11 +118,12 @@ void scheduler()
 							}
 					}
 			}
-
+			// If nothing can run, all user apps are done
 			if (best == NULL) {
 					panic("all app are over!\n");
 			}
-
+			// This process is being chosen now, so increase its stride
+                // by its pass value before switching to it
 			best->stride += best->pass;
 			tracef("swtich to proc %d", best - pool);
 			best->state = RUNNING;
@@ -148,6 +150,7 @@ void sched()
 // Give up the CPU for one scheduling round.
 void yield()
 {
+	// Current process gives up the CPU but stays runnable
 	current_proc->state = RUNNABLE;
     sched();
 }
@@ -187,7 +190,7 @@ int fork()
 	// Cause fork to return 0 in the child.
 	np->trapframe->a0 = 0;
 	np->parent = p;
-	np->state = RUNNABLE;
+	np->state = RUNNABLE;// Child is ready to run and will be picked by stride scheduler
 	return np->pid;
 }
 
@@ -228,6 +231,7 @@ int wait(int pid, int *code)
 		if (!havekids) {
 			return -1;
 		}
+		// Parent did not find a finished child yet, so let other processes run
 		p->state = RUNNABLE;
 		sched();
 	}

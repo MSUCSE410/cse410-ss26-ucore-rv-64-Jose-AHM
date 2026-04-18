@@ -6,7 +6,7 @@
 #include "timer.h"
 #include "trap.h"
 
-#define BIG_STRIDE 0x7fffffffULL
+#define BIG_STRIDE 0x7fffffffULL // Large constant used to compute pass = BIG_STRIDE / priority
 
 uint64 sys_task_info(uint64 va);
 uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd);
@@ -104,24 +104,26 @@ uint64 sys_spawn(uint64 va)
 	        struct proc *p = curr_proc();
         char name[200];
 
+		// Copy the program name from user memory into the kernel
         if (copyinstr(p->pagetable, name, va, sizeof(name)) < 0)
                 return -1;
-
+		// Find which built-in user program matches that name
         int id = get_id_by_name(name);
         if (id < 0)
                 return -1;
-
+		// Create a new process slot for the child
         struct proc *np = allocproc();
         if (np == 0)
                 return -1;
-
+		// Record who created this child
         np->parent = p;
 
+		// Load the requested program into the child process
         if (loader(id, np) < 0) {
                 freeproc(np);
                 return -1;
         }
-
+		//Child is ready to be scheduled
         np->state = RUNNABLE;
 		//add_task(np);
         return np->pid;
@@ -130,11 +132,12 @@ uint64 sys_spawn(uint64 va)
 uint64 sys_set_priority(long long prio)
 {
     struct proc *p = curr_proc();
-
+	   // Priority must be at least 2
 	if (prio < 2)
 			return -1;
-
+	// Save the new priority
 	p->priority = (uint64)prio;
+	// Recompute pass so future scheduling reflects the new priority
 	p->pass = BIG_STRIDE / p->priority;
 	return p->priority;
 }
