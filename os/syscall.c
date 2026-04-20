@@ -1,19 +1,41 @@
 #include "syscall.h"
 #include "console.h"
 #include "defs.h"
+#include "file.h"
+#include "fs.h"
 #include "loader.h"
+#include "proc.h"
+#include "string.h"
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
+#include "vm.h"
 
-#define BIG_STRIDE 0x7fffffffULL // Large constant used to compute pass = BIG_STRIDE / priority
+#define BIG_STRIDE 0x7fffffffULL
 
-uint64 sys_task_info(uint64 va);
+#define DIR  0x040000
+#define FILE 0x100000
+
+typedef struct {
+	uint64 dev;
+	uint64 ino;
+	uint32 mode;
+	uint32 nlink;
+	uint64 pad[7];
+} Stat;
+
 uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd);
 uint64 sys_munmap(uint64 start, uint64 len);
 
-uint64 sys_write(int fd, uint64 va, uint len)
->>>>>>> 0f331c4 (Finish ch4 task 2 mmap and munmap)
+uint64 sys_openat(uint64 path, int flags, int mode);
+uint64 sys_close(int fd);
+uint64 sys_fstat(int fd, uint64 st);
+uint64 sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint flags);
+uint64 sys_unlinkat(int dirfd, uint64 path, uint flags);
+
+void freeproc(struct proc *p);
+
+uint64 console_write(uint64 va, uint64 len)
 {
 	struct proc *p = curr_proc();
 	char str[MAX_STR_LEN];
@@ -22,7 +44,7 @@ uint64 sys_write(int fd, uint64 va, uint len)
 	for (int i = 0; i < size; ++i) {
 		console_putchar(str[i]);
 	}
-	return len;
+	return size;
 }
 
 uint64 console_read(uint64 va, uint64 len)
@@ -40,14 +62,16 @@ uint64 console_read(uint64 va, uint64 len)
 
 uint64 sys_write(int fd, uint64 va, uint64 len)
 {
-	if (fd < 0 || fd > FD_BUFFER_SIZE)
+	if (fd < 0 || fd >= FD_BUFFER_SIZE)
 		return -1;
+
 	struct proc *p = curr_proc();
 	struct file *f = p->files[fd];
 	if (f == NULL) {
 		errorf("invalid fd %d\n", fd);
 		return -1;
 	}
+
 	switch (f->type) {
 	case FD_STDIO:
 		return console_write(va, len);
@@ -60,14 +84,16 @@ uint64 sys_write(int fd, uint64 va, uint64 len)
 
 uint64 sys_read(int fd, uint64 va, uint64 len)
 {
-	if (fd < 0 || fd > FD_BUFFER_SIZE)
+	if (fd < 0 || fd >= FD_BUFFER_SIZE)
 		return -1;
+
 	struct proc *p = curr_proc();
 	struct file *f = p->files[fd];
 	if (f == NULL) {
 		errorf("invalid fd %d\n", fd);
 		return -1;
 	}
+
 	switch (f->type) {
 	case FD_STDIO:
 		return console_read(va, len);
@@ -129,6 +155,7 @@ uint64 sys_exec(uint64 path, uint64 uargv)
 	struct proc *p = curr_proc();
 	char name[MAX_STR_LEN];
 	copyinstr(p->pagetable, name, path, MAX_STR_LEN);
+
 	uint64 arg;
 	static char strpool[MAX_ARG_NUM][MAX_STR_LEN];
 	char *argv[MAX_ARG_NUM];
@@ -149,47 +176,188 @@ uint64 sys_wait(int pid, uint64 va)
 	return wait(pid, code);
 }
 
-uint64 sys_spawn(uint64 va)
+uint64 sys_openat(uint64 path, int flags, int mode)
 {
-	        struct proc *p = curr_proc();
-        char name[200];
+        (void)mode;
+        struct proc *p = curr_proc();
+        char name[MAXPATH];
 
-		// Copy the program name from user memory into the kernel
-        if (copyinstr(p->pagetable, name, va, sizeof(name)) < 0)
+        if (copyinstr(p->pagetable, name, path, sizeof(name)) < 0)
                 return -1;
-		// Find which built-in user program matches that name
-        int id = get_id_by_name(name);
-        if (id < 0)
-                return -1;
-		// Create a new process slot for the child
-        struct proc *np = allocproc();
-        if (np == 0)
-                return -1;
-		// Record who created this child
-        np->parent = p;
 
-		// Load the requested program into the child process
-        if (loader(id, np) < 0) {
-                freeproc(np);
-                return -1;
-        }
-		//Child is ready to be scheduled
-        np->state = RUNNABLE;
-		//add_task(np);
-        return np->pid;
+        return fileopen(name, flags);
+}
+
+uint64 sys_close(int fd)
+{
+	struct proc *p = curr_proc();
+
+	if (fd < 0 || fd >= FD_BUFFER_SIZE)
+		return -1;
+	if (p->files[fd] == NULL)
+		return -1;
+
+	fileclose(p->files[fd]);
+	p->files[fd] = NULL;
+	return 0;
+}
+
+uint64 sys_spawn(uint64 path)
+{
+	struct proc *p = curr_proc();
+	struct proc *np;
+	struct inode *ip;
+	char name[MAX_STR_LEN];
+	char *argv[] = { 0 };
+
+	if (copyinstr(p->pagetable, name, path, sizeof(name)) < 0)
+		return -1;
+
+	np = allocproc();
+	if (np == 0)
+		return -1;
+
+	np->parent = p;
+
+	if (init_stdio(np) < 0) {
+		freeproc(np);
+		return -1;
+	}
+
+	ip = namei(name);
+	if (ip == 0) {
+		freeproc(np);
+		return -1;
+	}
+
+	bin_loader(ip, np);
+	iput(ip);
+	np->trapframe->a0 = push_argv(np, argv);
+	np->state = RUNNABLE;
+	return np->pid;
 }
 
 uint64 sys_set_priority(long long prio)
 {
-    struct proc *p = curr_proc();
-	   // Priority must be at least 2
+	struct proc *p = curr_proc();
+
 	if (prio < 2)
-			return -1;
-	// Save the new priority
+		return -1;
+
 	p->priority = (uint64)prio;
-	// Recompute pass so future scheduling reflects the new priority
 	p->pass = BIG_STRIDE / p->priority;
 	return p->priority;
+}
+
+/* compile-safe placeholders for Project 4; replace next */
+uint64 sys_fstat(int fd, uint64 st)
+{
+        struct proc *p = curr_proc();
+        struct file *f;
+        Stat kst;
+
+        if (fd < 0 || fd >= FD_BUFFER_SIZE)
+                return -1;
+        if ((f = p->files[fd]) == NULL)
+                return -1;
+        if (f->type != FD_INODE)
+                return -1;
+
+        ivalid(f->ip);
+
+        memset(&kst, 0, sizeof(kst));
+        kst.dev = 0;
+        kst.ino = f->ip->inum;
+        kst.mode = (f->ip->type == T_DIR) ? DIR : FILE;
+        kst.nlink = f->ip->nlink;
+
+        if (copyout(p->pagetable, st, (char *)&kst, sizeof(kst)) < 0)
+                return -1;
+
+        return 0;
+}
+
+uint64 sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint flags)
+{
+        (void)olddirfd;
+        (void)newdirfd;
+        (void)flags;
+
+        struct proc *p = curr_proc();
+        struct inode *ip, *dp;
+        char oldname[MAXPATH], newname[MAXPATH];
+
+        if (copyinstr(p->pagetable, oldname, oldpath, sizeof(oldname)) < 0)
+                return -1;
+        if (copyinstr(p->pagetable, newname, newpath, sizeof(newname)) < 0)
+                return -1;
+
+        if (strncmp(oldname, newname, DIRSIZ) == 0)
+                return -1;
+
+        if ((ip = namei(oldname)) == 0)
+                return -1;
+
+        ivalid(ip);
+        if (ip->type != T_FILE) {
+                iput(ip);
+                return -1;
+        }
+
+        dp = root_dir();
+        ivalid(dp);
+
+        if (dirlink(dp, newname, ip->inum) < 0) {
+                iput(dp);
+                iput(ip);
+                return -1;
+        }
+
+        ip->nlink++;
+        iupdate(ip);
+
+        iput(dp);
+        iput(ip);
+        return 0;
+}
+
+uint64 sys_unlinkat(int dirfd, uint64 path, uint flags)
+{
+        (void)dirfd;
+        (void)flags;
+
+        struct proc *p = curr_proc();
+        struct inode *ip, *dp;
+        struct dirent de;
+        uint off;
+        char name[MAXPATH];
+
+        if (copyinstr(p->pagetable, name, path, sizeof(name)) < 0)
+                return -1;
+
+        dp = root_dir();
+        ivalid(dp);
+
+        if ((ip = dirlookup(dp, name, &off)) == 0) {
+                iput(dp);
+                return -1;
+        }
+
+        ivalid(ip);
+
+        memset(&de, 0, sizeof(de));
+        if (writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de)) {
+                iput(ip);
+                iput(dp);
+                return -1;
+        }
+
+        ip->nlink--;
+        iupdate(ip);
+
+        iput(dp);
+        iput(ip);
+        return 0;
 }
 
 extern char trap_page[];
@@ -200,8 +368,10 @@ void syscall()
 	int id = trapframe->a7, ret;
 	uint64 args[6] = { trapframe->a0, trapframe->a1, trapframe->a2,
 			   trapframe->a3, trapframe->a4, trapframe->a5 };
-	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
-	       args[1], args[2], args[3], args[4], args[5]);
+
+	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]",
+	       id, args[0], args[1], args[2], args[3], args[4], args[5]);
+
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], args[1], args[2]);
@@ -217,7 +387,6 @@ void syscall()
 		break;
 	case SYS_exit:
 		sys_exit(args[0]);
-		// __builtin_unreachable();
 	case SYS_sched_yield:
 		ret = sys_sched_yield();
 		break;
@@ -230,7 +399,7 @@ void syscall()
 	case SYS_getppid:
 		ret = sys_getppid();
 		break;
-	case SYS_clone: // SYS_fork
+	case SYS_clone:
 		ret = sys_clone();
 		break;
 	case SYS_execve:
@@ -240,77 +409,86 @@ void syscall()
 		ret = sys_wait(args[0], args[1]);
 		break;
 	case SYS_fstat:
-	    ret = sys_fstat(args[0],args[1]);
+		ret = sys_fstat(args[0], args[1]);
 		break;
 	case SYS_linkat:
-	    ret = sys_linkat(args[0],args[1],args[2],args[3],args[4]);
+		ret = sys_linkat(args[0], args[1], args[2], args[3], args[4]);
 		break;
 	case SYS_unlinkat:
-	    ret = sys_unlinkat(args[0],args[1],args[2]);
+		ret = sys_unlinkat(args[0], args[1], args[2]);
+		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+	case SYS_setpriority:
+		ret = sys_set_priority((long long)args[0]);
+		break;
 	case SYS_mmap:
-    	ret = sys_mmap(args[0], args[1], args[2], args[3], args[4]);
-    	break;
+		ret = sys_mmap(args[0], args[1], args[2], args[3], args[4]);
+		break;
 	case SYS_munmap:
-    	ret = sys_munmap(args[0], args[1]);
-    	break;
+		ret = sys_munmap(args[0], args[1]);
+		break;
 	default:
 		ret = -1;
 		errorf("unknown syscall %d", id);
 	}
+
 	trapframe->a0 = ret;
 	tracef("syscall ret %d", ret);
 }
+
 uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd)
 {
-    struct proc *p = curr_proc();
-    uint64 a;
-    int perm = PTE_U;
+	(void)flag;
+	(void)fd;
 
-    if (len == 0) return 0;
-    if (start % PGSIZE != 0) return -1;
-    if (len > (1ULL << 30)) return -1;
-    if ((port & ~0x7) != 0) return -1;
-    if ((port & 0x7) == 0) return -1;
+	struct proc *p = curr_proc();
+	uint64 a;
+	int perm = PTE_U;
 
-    if (port & 0x1) perm |= PTE_R;
-    if (port & 0x2) perm |= PTE_W;
-    if (port & 0x4) perm |= PTE_X;
+	if (len == 0) return 0;
+	if (start % PGSIZE != 0) return -1;
+	if (len > (1ULL << 30)) return -1;
+	if ((port & ~0x7) != 0) return -1;
+	if ((port & 0x7) == 0) return -1;
 
-    len = PGROUNDUP(len);
+	if (port & 0x1) perm |= PTE_R;
+	if (port & 0x2) perm |= PTE_W;
+	if (port & 0x4) perm |= PTE_X;
 
-    for (a = start; a < start + len; a += PGSIZE) {
-        if (walkaddr(p->pagetable, a) != 0) return -1;
-    }
+	len = PGROUNDUP(len);
 
-    for (a = start; a < start + len; a += PGSIZE) {
-        void *mem = kalloc();
-        if (mem == 0) return -1;
-        memset(mem, 0, PGSIZE);
-        if (mappages(p->pagetable, a, PGSIZE, (uint64)mem, perm) < 0) {
-            return -1;
-        }
-    }
+	for (a = start; a < start + len; a += PGSIZE) {
+		if (walkaddr(p->pagetable, a) != 0) return -1;
+	}
 
-    return 0;
+	for (a = start; a < start + len; a += PGSIZE) {
+		void *mem = kalloc();
+		if (mem == 0) return -1;
+		memset(mem, 0, PGSIZE);
+		if (mappages(p->pagetable, a, PGSIZE, (uint64)mem, perm) < 0) {
+			return -1;
+		}
+	}
+
+	return 0;
 }
 
 uint64 sys_munmap(uint64 start, uint64 len)
 {
-    struct proc *p = curr_proc();
-    uint64 a;
+	struct proc *p = curr_proc();
+	uint64 a;
 
-    if (len == 0) return 0;
-    if (start % PGSIZE != 0) return -1;
+	if (len == 0) return 0;
+	if (start % PGSIZE != 0) return -1;
 
-    len = PGROUNDUP(len);
+	len = PGROUNDUP(len);
 
-    for (a = start; a < start + len; a += PGSIZE) {
-        if (walkaddr(p->pagetable, a) == 0) return -1;
-    }
+	for (a = start; a < start + len; a += PGSIZE) {
+		if (walkaddr(p->pagetable, a) == 0) return -1;
+	}
 
-    uvmunmap(p->pagetable, start, len / PGSIZE, 1);
-    return 0;
+	uvmunmap(p->pagetable, start, len / PGSIZE, 1);
+	return 0;
 }
