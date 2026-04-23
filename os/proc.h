@@ -58,14 +58,39 @@ struct proc {
 	//File descriptor table, using to record the files opened by the process
 	struct file *files[FD_BUFFER_SIZE];
 	struct thread threads[NTHREAD];
-	// Use dummy increasing id as index index of lock pool because we don't have destroy method yet
+	// These say "what is the next id we should give out?"
+	// Since there is no destroy syscall yet, the ids only go up.
 	uint next_mutex_id, next_semaphore_id, next_condvar_id;
+	// Each process owns its own small arrays of sync objects.
+	// A mutex/semaphore/condvar id is just the index in these arrays.
 	struct mutex mutex_pool[LOCK_POOL_SIZE];
 	struct semaphore semaphore_pool[LOCK_POOL_SIZE];
 	struct condvar condvar_pool[LOCK_POOL_SIZE];
-	// LAB5: (1) Define your variables for deadlock detect here.
-	//			 You may need a flag to record if detection enabled,
-	//       and some arrays for detection algorithm.
+	// LAB5: deadlock-detection data.
+
+	// Deadlock-detection bookkeeping for this process.
+	//
+	// These fields let the kernel remember:
+	// 1. whether deadlock detection is turned on
+	// 2. what each thread currently holds
+	// 3. what each thread is currently waiting for
+	//
+	// The detector uses this information later to decide
+	// whether letting a thread block would cause deadlock.
+
+	// deadlock_detect_enabled:
+	// 0 means "do not check", 1 means "check before blocking".
+	int deadlock_detect_enabled;
+	// mutex_allocation[tid][mid] == 1 means thread tid currently holds mutex mid.
+	int mutex_allocation[NTHREAD][LOCK_POOL_SIZE];
+	// mutex_request[tid][mid] == 1 means thread tid is waiting for mutex mid.
+	int mutex_request[NTHREAD][LOCK_POOL_SIZE];
+	// semaphore_allocation[tid][sid] says how many units of semaphore sid
+	// thread tid currently holds.
+	int semaphore_allocation[NTHREAD][LOCK_POOL_SIZE];
+	// semaphore_request[tid][sid] == 1 means thread tid is waiting for
+	// one more unit of semaphore sid.
+	int semaphore_request[NTHREAD][LOCK_POOL_SIZE];
 };
 
 int cpuid();

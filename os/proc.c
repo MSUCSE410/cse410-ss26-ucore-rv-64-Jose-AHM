@@ -142,7 +142,13 @@ found:
 	p->next_mutex_id = 0;
 	p->next_semaphore_id = 0;
 	p->next_condvar_id = 0;
-	// LAB5: (1) you may initialize your new proc variables here
+	// Start with deadlock detection turned off.
+	p->deadlock_detect_enabled = 0;
+	// No thread in this new process owns or waits for anything yet.
+	memset(p->mutex_allocation, 0, sizeof(p->mutex_allocation));
+	memset(p->mutex_request, 0, sizeof(p->mutex_request));
+	memset(p->semaphore_allocation, 0, sizeof(p->semaphore_allocation));
+	memset(p->semaphore_request, 0, sizeof(p->semaphore_request));
 	return p;
 }
 
@@ -173,6 +179,12 @@ found:
 	t->state = T_USED;
 	t->process = p;
 	t->exit_code = 0;
+	// Clear this thread's deadlock rows in case this slot was used before.
+	memset(p->mutex_allocation[tid], 0, sizeof(p->mutex_allocation[tid]));
+	memset(p->mutex_request[tid], 0, sizeof(p->mutex_request[tid]));
+	memset(p->semaphore_allocation[tid], 0,
+	       sizeof(p->semaphore_allocation[tid]));
+	memset(p->semaphore_request[tid], 0, sizeof(p->semaphore_request[tid]));
 	// kernel stack
 	t->kstack = (uint64)kstack[p - pool][tid];
 	// don't clear kstack now for exec()
